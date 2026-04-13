@@ -1132,4 +1132,136 @@ public toy_on_pickup(id, ent, toy_idx)
 
 ---
 
+# `toys_system.inc` — Quick Reference / Краткий справочник
+
+Complete list of everything exposed by the header file. / Полный список того что экспортируется заголовком.
+
+## Constants / Константы
+
+| Name / Имя | Value / Значение | Description / Описание |
+|---|---|---|
+| `TOY_RARITY_COMMON` | `0` | Common rarity / Обычный раритет |
+| `TOY_RARITY_RARE` | `1` | Rare rarity / Редкий раритет |
+| `TOY_RARITY_EPIC` | `2` | Epic rarity / Эпический раритет |
+| `TOY_RARITY_LEGENDARY` | `3` | Legendary rarity / Легендарный раритет |
+| `TOY_RARITY_WEIGHT_COMMON` | `100` | Default weight for common / Вес по умолчанию |
+| `TOY_RARITY_WEIGHT_RARE` | `30` | Default weight for rare / Вес по умолчанию |
+| `TOY_RARITY_WEIGHT_EPIC` | `10` | Default weight for epic / Вес по умолчанию |
+| `TOY_RARITY_WEIGHT_LEGENDARY` | `3` | Default weight for legendary / Вес по умолчанию |
+| `TOY_MAX_LEGENDARY_PER_MAP` | `1` | Max legendary per map / Макс. легендарных на карту |
+| `TOY_DEFAULT_PICKUP_SOUND` | `"items/gunpickup2.wav"` | Fallback pickup sound / Резервный звук подбора |
+| `TOY_ENT_CLASSNAME` | `"toy_ent"` | Entity classname / Имя класса энтити |
+
+---
+
+## Forwards / Форварды
+
+| Signature / Сигнатура | ET / Тип | Description / Описание |
+|---|---|---|
+| `toy_on_pickup(id, ent, toy_idx)` | `ET_STOP` | Called on pickup attempt. Return `PLUGIN_HANDLED` to cancel. / Вызов при попытке подбора. `PLUGIN_HANDLED` = отмена. |
+| `toy_on_spawned(ent, toy_idx, pos_idx)` | `ET_IGNORE` | Called after a toy entity has been created. / Вызов после создания энтити игрушки. |
+| `toy_on_map_spawn_complete(count)` | `ET_IGNORE` | Called once after all toys spawned on the map. / Однократный вызов после спавна всех игрушек на карте. |
+
+### Parameter reference / Расшифровка параметров
+
+| Parameter / Параметр | Type / Тип | Description / Описание |
+|---|---|---|
+| `id` | `int` | Player entity (1–32) / Индекс игрока |
+| `ent` | `int` | Toy entity index / Индекс энтити игрушки |
+| `toy_idx` | `int` | Toy type index (from config) / Индекс типа игрушки (из конфига) |
+| `pos_idx` | `int` | Spawn position index / Индекс позиции спавна |
+| `count` | `int` | Total toys spawned on map / Всего заспавнено на карте |
+
+---
+
+## Natives / Нативы
+
+### Entity & type queries / Запросы по энтити и типу
+
+| Native / Натив | Returns / Возвращает | Description / Описание |
+|---|---|---|
+| `toy_get_toy_idx(ent)` | `int` | Toy type idx from entity, or `-1`. / Индекс типа из энтити или `-1`. |
+| `toy_get_name(idx, buf[], len)` | — | Copies toy name into `buf`. / Копирует имя игрушки в `buf`. |
+| `toy_get_rarity(idx)` | `int` | `TOY_RARITY_*` constant. / Константа `TOY_RARITY_*`. |
+| `toy_get_model(idx, buf[], len)` | — | Copies model path into `buf`. / Копирует путь к модели в `buf`. |
+| `toy_get_body(idx)` | `int` | Bodygroup index. / Номер bodygroup. |
+| `toy_get_skin(idx)` | `int` | Skin index. / Номер skin. |
+
+### Counters / Счётчики
+
+| Native / Натив | Returns / Возвращает | Description / Описание |
+|---|---|---|
+| `toy_get_type_count()` | `int` | Total toy types loaded. / Всего загруженных типов. |
+| `toy_get_spawned_count()` | `int` | Live (uncollected) toys. / Живых (несобранных) игрушек. |
+| `toy_get_pos_count()` | `int` | Saved positions on current map. / Сохранённых позиций на карте. |
+
+### Position management / Управление позициями
+
+| Native / Натив | Returns / Возвращает | Description / Описание |
+|---|---|---|
+| `toy_get_pos_data(pos_idx, Float:origin[3], &Float:yaw, &bound_toy_idx)` | `int` | Fills origin/yaw/binding. `1`=ok, `0`=out of range. / Заполняет origin/yaw/привязку. |
+| `toy_add_position(const Float:origin[3], Float:yaw, bound_toy_idx = -1)` | `int` | New `pos_idx` or `-1` if full. / Новый `pos_idx` или `-1`. |
+| `toy_remove_position(pos_idx)` | — | Removes position (shifts indices). / Удаляет позицию (сдвиг индексов). |
+| `toy_update_position(pos_idx, const Float:origin[3], Float:yaw, bound_toy_idx)` | — | Overwrites position data. / Перезаписывает позицию. |
+| `toy_save_positions()` | — | Writes to disk. / Пишет на диск. |
+| `toy_reload_positions()` | — | Re-reads from disk. / Перечитывает с диска. |
+| `toy_clear_positions()` | — | Clears all from memory. / Очищает всё из памяти. |
+
+### Spawn control / Управление спавном
+
+| Native / Натив | Returns / Возвращает | Description / Описание |
+|---|---|---|
+| `toy_spawn_at_position(pos_idx)` | `int` | New entity or `0`. / Новая энтити или `0`. |
+| `toy_respawn_all()` | — | Removes all, respawns fresh set. / Переспавн всех игрушек. |
+| `toy_remove_entity(ent)` | — | Removes one toy entity silently. / Тихое удаление одной игрушки. |
+| `toy_trigger_pickup(id, ent)` | — | Simulates pickup (fires forward, rewards, sound). / Имитирует подбор (форвард, награды, звук). |
+
+### Per-map count override / Переопределение количества на карту
+
+| Native / Натив | Returns / Возвращает | Description / Описание |
+|---|---|---|
+| `toy_get_map_file_count()` | `int` | `-1` auto / `0` off / `N` exact. / `-1` авто / `0` выкл / `N` точно. |
+| `toy_set_map_file_count(count)` | — | Sets the override (call save after). / Устанавливает (затем save). |
+
+---
+
+## Stock / Сток
+
+| Stock / Сток | Description / Описание |
+|---|---|
+| `toy_rarity_to_str(id, rarity, buf[], len)` | Fills `buf` with localized rarity name for player `id`. Buffer should be ≥32. / Заполняет `buf` локализованным названием раритета для игрока `id`. Буфер ≥32. |
+
+---
+
+## Typical usage patterns / Типичные сценарии
+
+| Goal / Цель | Hook / Call — Хук / вызов |
+|---|---|
+| Block pickup under condition / Заблокировать подбор | `toy_on_pickup` → `return PLUGIN_HANDLED` |
+| Add custom rewards / Свои награды | `toy_on_pickup` + `toy_get_rarity` |
+| Visual effect on spawn / Эффект при спавне | `toy_on_spawned` + `set_rendering` |
+| Start map-wide timer / Таймер на карту | `toy_on_map_spawn_complete` |
+| Periodic "X toys left" / Периодический анонс | `toy_get_spawned_count` + `set_task` |
+| Shoot-to-pickup / Подбор выстрелом | damage forward → `toy_trigger_pickup` |
+| Programmatic admin tool / Свой админ-тул | `toy_add_position` + `toy_save_positions` |
+| Respawn on round start / Переспавн в начале раунда | round start event → `toy_respawn_all` |
+
+---
+
+## Required / recommended includes / Необходимые / рекомендуемые инклуды
+
+```pawn
+#include <amxmodx>       // required / обязательно
+#include <toys_system>   // required / обязательно
+
+// Optional, depending on what you do in callbacks:
+// Опционально, по необходимости:
+#include <fakemeta>      // pev/set_pev, engfunc — for position/rendering work
+#include <engine>        // set_rendering, find_entity
+#include <cstrike>       // cs_get_user_money etc.
+#include <amxmisc>       // admin helpers
+```
+
+---
+
 *Adventures Toy System v2.0 — medusa*
