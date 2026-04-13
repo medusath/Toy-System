@@ -224,58 +224,17 @@ When `toy_logging 1`:
 
 ---
 
-## Developer API
+## Developer API (`toys_system.inc`)
 
-### Forwards
-
-```pawn
-// Called when a player picks up a toy. Return PLUGIN_HANDLED to cancel pickup.
-forward toy_on_pickup(id, ent, toy_idx);
-
-// Called when a toy entity is spawned.
-forward toy_on_spawned(ent, toy_idx, pos_idx);
-
-// Called after all toys for the map have been spawned.
-forward toy_on_map_spawn_complete(count);
-```
-
-### Natives
+To use the API from your own plugin, include the header:
 
 ```pawn
-// Get toy index from entity
-native toy_get_toy_idx(ent);
-
-// Get toy properties
-native toy_get_name(idx, buf[], len);
-native toy_get_rarity(idx);         // returns TOY_RARITY_* constant
-native toy_get_model(idx, buf[], len);
-native toy_get_body(idx);
-native toy_get_skin(idx);
-
-// Count information
-native toy_get_type_count();        // total toy types loaded from config
-native toy_get_spawned_count();     // currently alive (uncollected) toy entities
-native toy_get_pos_count();         // saved positions for current map
-
-// Position management
-native toy_get_pos_data(pos_idx, Float:origin[3], &Float:yaw, &bound_toy_idx);
-native toy_add_position(const Float:origin[3], Float:yaw, bound_toy_idx = -1);
-native toy_remove_position(pos_idx);
-native toy_update_position(pos_idx, const Float:origin[3], Float:yaw, bound_toy_idx);
-native toy_save_positions();
-native toy_reload_positions();
-native toy_clear_positions();
-
-// Spawn control
-native toy_spawn_at_position(pos_idx);
-native toy_respawn_all();
-native toy_remove_entity(ent);
-native toy_trigger_pickup(id, ent);
-
-// Per-map count override
-native toy_get_map_file_count();    // -1 = auto, 0 = off, N = exact count
-native toy_set_map_file_count(count);
+#include <toys_system>
 ```
+
+This adds `#pragma library toys_system` which makes AMX Mod X load your plugin only after `toy_core.amxx` is loaded.
+
+---
 
 ### Constants
 
@@ -285,14 +244,318 @@ native toy_set_map_file_count(count);
 #define TOY_RARITY_EPIC         2
 #define TOY_RARITY_LEGENDARY    3
 
-#define TOY_ENT_CLASSNAME       "toy_ent"
+#define TOY_RARITY_WEIGHT_COMMON        100   // default weights
+#define TOY_RARITY_WEIGHT_RARE           30
+#define TOY_RARITY_WEIGHT_EPIC           10
+#define TOY_RARITY_WEIGHT_LEGENDARY       3
+
+#define TOY_MAX_LEGENDARY_PER_MAP         1   // legendary cap per map
+
+#define TOY_DEFAULT_PICKUP_SOUND    "items/gunpickup2.wav"
+#define TOY_ENT_CLASSNAME           "toy_ent"
 ```
+
+Use `TOY_ENT_CLASSNAME` to find all toy entities on the map:
+```pawn
+new ent = -1
+while((ent = engfunc(EngFunc_FindEntityByString, ent, "classname", TOY_ENT_CLASSNAME)) > 0)
+{
+    // ent is a live toy entity
+}
+```
+
+---
+
+### Forwards
+
+Forwards are callbacks other plugins can hook into. Declare them as `public` functions in your plugin.
+
+#### `toy_on_pickup(id, ent, toy_idx)`
+
+Called **before** a toy is removed, when a player attempts to pick it up.
+
+| Parameter | Description |
+|---|---|
+| `id` | Player entity index (1–32) |
+| `ent` | Toy entity index (still valid in this forward) |
+| `toy_idx` | Toy type index (0-based, from `toy_models.ini`) |
+
+**Return values:**
+- `PLUGIN_CONTINUE` — allow pickup (default if forward not defined)
+- `PLUGIN_HANDLED` — block pickup (toy stays on map, no rewards given)
+
+**Use cases:**
+- Add your own points/money/XP system (this is what `toy_rewards.amxx` does)
+- Restrict pickup by team, VIP flag, or condition
+- Log or broadcast custom pickup events
+- Grant gameplay bonuses (HP, armor, weapons)
+
+**Example — block pickup for CTs:**
+```pawn
+public toy_on_pickup(id, ent, toy_idx)
+{
+    if(get_user_team(id) == 2) // CT
+    {
+        client_print(id, print_chat, "Only Terrorists can collect toys!")
+        return PLUGIN_HANDLED
+    }
+    return PLUGIN_CONTINUE
+}
+```
+
+**Example — give HP on pickup:**
+```pawn
+public toy_on_pickup(id, ent, toy_idx)
+{
+    new rarity = toy_get_rarity(toy_idx)
+    new hp = (rarity == TOY_RARITY_LEGENDARY) ? 100 : 25
+    set_user_health(id, min(get_user_health(id) + hp, 150))
+    return PLUGIN_CONTINUE
+}
+```
+
+---
+
+#### `toy_on_spawned(ent, toy_idx, pos_idx)`
+
+Called **after** a toy entity has been created on the map (during initial spawn or respawn).
+
+| Parameter | Description |
+|---|---|
+| `ent` | Newly created toy entity index |
+| `toy_idx` | Toy type index |
+| `pos_idx` | Position index (0-based, from `data/toy_spawn/<map>.ini`) |
+
+**Return:** ignored (ET_IGNORE)
+
+**Use cases:**
+- Attach custom effects (glow, light, particles) to specific rarities
+- Apply render overlays, transparency, color
+- Extend tracking for analytics
+
+**Example — gold glow on legendary toys:**
+```pawn
+public toy_on_spawned(ent, toy_idx, pos_idx)
+{
+    if(toy_get_rarity(toy_idx) != TOY_RARITY_LEGENDARY) return
+
+    set_rendering(ent, kRenderFxGlowShell, 255, 200, 0, kRenderNormal, 16)
+}
+```
+
+---
+
+#### `toy_on_map_spawn_complete(count)`
+
+Called **once per map**, right after all initial toys have been spawned.
+
+| Parameter | Description |
+|---|---|
+| `count` | Actual number of toys spawned (may be less than requested if positions/types ran out) |
+
+**Return:** ignored
+
+**Use cases:**
+- Set up scoreboard, scoreboard HUD, or announcer timers (this is what `toy_announcer.amxx` does)
+- Initialize per-map collection tracking
+- Save map-start snapshot for statistics
+
+**Example — show map start message:**
+```pawn
+public toy_on_map_spawn_complete(count)
+{
+    client_print_color(0, print_team_default, "^4[Toys]^1 %d toys spawned. Happy hunting!", count)
+}
+```
+
+---
+
+### Natives — Read toy type data
+
+These query the toy database loaded from `toy_models.ini`. Use `idx` = 0…`toy_get_type_count()-1`.
+
+#### `toy_get_toy_idx(ent)`
+Returns the toy type index for a toy entity, or `-1` if `ent` is not a toy.
+
+```pawn
+new toy_idx = toy_get_toy_idx(ent)
+if(toy_idx < 0) return  // not a toy entity
+```
+
+#### `toy_get_name(idx, buf[], len)`
+Copies the toy's display name (from the section header in `toy_models.ini`, e.g. `"Foxy Red"`) into `buf`.
+
+#### `toy_get_rarity(idx)`
+Returns one of `TOY_RARITY_COMMON`, `TOY_RARITY_RARE`, `TOY_RARITY_EPIC`, `TOY_RARITY_LEGENDARY`.
+
+#### `toy_get_model(idx, buf[], len)`
+Copies the model path (e.g. `models/toys/FNAF_toys.mdl`) into `buf`.
+
+#### `toy_get_body(idx)` / `toy_get_skin(idx)`
+Returns bodygroup / skin index used by this toy type. Useful if you spawn your own preview model.
+
+#### `toy_get_type_count()`
+Total number of toy types loaded from the config (across all rarities).
+
+---
+
+### Natives — Spawn state
+
+#### `toy_get_spawned_count()`
+Number of toy entities currently alive on the map (not yet collected). Decreases on every pickup, resets on respawn.
+
+**Used by** `toy_announcer.amxx` to announce remaining toys.
+
+```pawn
+new remaining = toy_get_spawned_count()
+client_print(id, print_chat, "%d toys still hidden on the map", remaining)
+```
+
+#### `toy_get_pos_count()`
+Number of saved positions for the current map (from `data/toy_spawn/<map>.ini`).
+
+---
+
+### Natives — Position management
+
+Positions are spawn anchors placed by admins. Each position has an origin, yaw, and optional bound toy type.
+
+#### `toy_get_pos_data(pos_idx, Float:origin[3], &Float:yaw, &bound_toy_idx)`
+Reads position data by index.
+- `origin` filled with XYZ
+- `yaw` filled with Y-axis rotation
+- `bound_toy_idx` = `-1` if random, otherwise toy type index
+
+Returns `1` on success, `0` if `pos_idx` is out of range.
+
+#### `toy_add_position(const Float:origin[3], Float:yaw, bound_toy_idx = -1)`
+Creates a new position in memory. Returns new `pos_idx` or `-1` if full (max 512 positions).  
+**Does not save automatically** — call `toy_save_positions()` after batch changes.
+
+#### `toy_remove_position(pos_idx)`
+Removes position at index. Indices of later positions shift down by 1.
+
+#### `toy_update_position(pos_idx, const Float:origin[3], Float:yaw, bound_toy_idx)`
+Overwrites an existing position's data.
+
+#### `toy_save_positions()`
+Writes the current in-memory positions to `data/toy_spawn/<currentmap>.ini`. Call after adding/removing/updating.
+
+#### `toy_reload_positions()`
+Re-reads the file and replaces in-memory positions. Useful after manual file edits.
+
+#### `toy_clear_positions()`
+Removes **all** positions for the current map from memory (does not auto-save).
+
+**Example — programmatically add a position at player's feet:**
+```pawn
+public cmd_addhere(id)
+{
+    new Float:origin[3], Float:angles[3]
+    pev(id, pev_origin, origin)
+    pev(id, pev_v_angle, angles)
+
+    new pos_idx = toy_add_position(origin, angles[1] + 180.0, -1)
+    if(pos_idx >= 0)
+    {
+        toy_save_positions()
+        client_print(id, print_chat, "Position #%d added", pos_idx)
+    }
+    return PLUGIN_HANDLED
+}
+```
+
+---
+
+### Natives — Spawn control
+
+#### `toy_spawn_at_position(pos_idx)`
+Forces a spawn at the given position. Returns the new entity index or `0` on failure. Respects rarity rules (legendary cap, shuffle-bag).
+
+#### `toy_respawn_all()`
+Removes all live toys and re-runs the full spawn cycle. Useful after changing `toy_count` or reloading config.
+
+#### `toy_remove_entity(ent)`
+Removes a specific toy entity from the map (without triggering pickup). Cleans up internal tracking.
+
+#### `toy_trigger_pickup(id, ent)`
+Simulates a pickup: fires `toy_on_pickup`, gives rewards, plays sound, removes entity. Useful for:
+- Alternative interaction (e.g., shooting the toy instead of pressing E)
+- Admin "collect for player" commands
+- Auto-pickup on touch zones
+
+```pawn
+// Admin command: force pickup the toy the admin is aiming at
+public cmd_forcegrab(id)
+{
+    new ent = find_aimed_toy(id, 500.0)  // your own helper
+    if(ent) toy_trigger_pickup(id, ent)
+    return PLUGIN_HANDLED
+}
+```
+
+---
+
+### Natives — Per-map count override
+
+#### `toy_get_map_file_count()`
+Returns the override value stored in the map's spawn file:
+- `-1` — auto (uses the `toy_count` cvar)
+- `0`  — disabled (no toys spawn on this map)
+- `N`  — exactly N toys
+
+#### `toy_set_map_file_count(count)`
+Sets the override. Call `toy_save_positions()` afterwards to persist. Used by the admin menu when changing the "Toy count" option.
+
+---
 
 ### Stock Helper
 
+#### `toy_rarity_to_str(id, rarity, buf[], len)`
+Fills `buf` with the localized rarity name (via `%L` format), respecting the player's language.
+
 ```pawn
-// Fills buf with the localized rarity string for player id
-stock toy_rarity_to_str(id, rarity, buf[], len)
+new rar_str[32]
+toy_rarity_to_str(id, TOY_RARITY_EPIC, rar_str, charsmax(rar_str))
+// rar_str = "Epic" (en) or "Эпическая" (ru)
+```
+
+> **Note:** use a buffer of **at least 32 cells** — Cyrillic letters take 2 bytes each in UTF-8, so "Легендарная" alone needs 22 bytes.
+
+---
+
+### Complete custom-reward plugin example
+
+```pawn
+#include <amxmodx>
+#include <cstrike>
+#include <toys_system>
+
+public plugin_init()
+    register_plugin("Toy Money Rewards", "1.0", "author")
+
+public toy_on_pickup(id, ent, toy_idx)
+{
+    new rarity = toy_get_rarity(toy_idx)
+    new money
+    switch(rarity)
+    {
+        case TOY_RARITY_COMMON:    money = 100
+        case TOY_RARITY_RARE:      money = 500
+        case TOY_RARITY_EPIC:      money = 1500
+        case TOY_RARITY_LEGENDARY: money = 5000
+    }
+
+    new current = cs_get_user_money(id)
+    cs_set_user_money(id, min(current + money, 16000))
+
+    new name[64], rar_str[32]
+    toy_get_name(toy_idx, name, charsmax(name))
+    toy_rarity_to_str(id, rarity, rar_str, charsmax(rar_str))
+
+    client_print(id, print_chat, "You found %s [%s] and got $%d", name, rar_str, money)
+    return PLUGIN_CONTINUE
+}
 ```
 
 ---
@@ -511,58 +774,17 @@ count 3
 
 ---
 
-## API для разработчиков
+## API для разработчиков (`toys_system.inc`)
 
-### Форварды
-
-```pawn
-// Вызывается когда игрок подбирает игрушку. PLUGIN_HANDLED = отменить подбор.
-forward toy_on_pickup(id, ent, toy_idx);
-
-// Вызывается при спавне игрушки на карте.
-forward toy_on_spawned(ent, toy_idx, pos_idx);
-
-// Вызывается после того, как все игрушки заспавнены на карте.
-forward toy_on_map_spawn_complete(count);
-```
-
-### Нативы
+Чтобы использовать API из своего плагина, подключите заголовок:
 
 ```pawn
-// Получить индекс игрушки из энтити
-native toy_get_toy_idx(ent);
-
-// Свойства игрушки
-native toy_get_name(idx, buf[], len);
-native toy_get_rarity(idx);          // возвращает константу TOY_RARITY_*
-native toy_get_model(idx, buf[], len);
-native toy_get_body(idx);
-native toy_get_skin(idx);
-
-// Счётчики
-native toy_get_type_count();         // количество типов игрушек из конфига
-native toy_get_spawned_count();      // текущее количество живых (несобранных) энтитей
-native toy_get_pos_count();          // количество сохранённых позиций для текущей карты
-
-// Управление позициями
-native toy_get_pos_data(pos_idx, Float:origin[3], &Float:yaw, &bound_toy_idx);
-native toy_add_position(const Float:origin[3], Float:yaw, bound_toy_idx = -1);
-native toy_remove_position(pos_idx);
-native toy_update_position(pos_idx, const Float:origin[3], Float:yaw, bound_toy_idx);
-native toy_save_positions();
-native toy_reload_positions();
-native toy_clear_positions();
-
-// Управление спавном
-native toy_spawn_at_position(pos_idx);
-native toy_respawn_all();
-native toy_remove_entity(ent);
-native toy_trigger_pickup(id, ent);
-
-// Переопределение количества игрушек на карту
-native toy_get_map_file_count();     // -1 = авто, 0 = выкл, N = точное количество
-native toy_set_map_file_count(count);
+#include <toys_system>
 ```
+
+Это добавляет `#pragma library toys_system`, благодаря чему AMX Mod X загрузит ваш плагин только после загрузки `toy_core.amxx`.
+
+---
 
 ### Константы
 
@@ -572,14 +794,318 @@ native toy_set_map_file_count(count);
 #define TOY_RARITY_EPIC         2
 #define TOY_RARITY_LEGENDARY    3
 
-#define TOY_ENT_CLASSNAME       "toy_ent"
+#define TOY_RARITY_WEIGHT_COMMON        100   // веса по умолчанию
+#define TOY_RARITY_WEIGHT_RARE           30
+#define TOY_RARITY_WEIGHT_EPIC           10
+#define TOY_RARITY_WEIGHT_LEGENDARY       3
+
+#define TOY_MAX_LEGENDARY_PER_MAP         1   // лимит легендарных на карту
+
+#define TOY_DEFAULT_PICKUP_SOUND    "items/gunpickup2.wav"
+#define TOY_ENT_CLASSNAME           "toy_ent"
 ```
+
+`TOY_ENT_CLASSNAME` можно использовать для поиска всех игрушек на карте:
+```pawn
+new ent = -1
+while((ent = engfunc(EngFunc_FindEntityByString, ent, "classname", TOY_ENT_CLASSNAME)) > 0)
+{
+    // ent — живая игрушка
+}
+```
+
+---
+
+### Форварды
+
+Форварды — это колбэки, в которые могут подключаться сторонние плагины. Объявляются как `public` функции.
+
+#### `toy_on_pickup(id, ent, toy_idx)`
+
+Вызывается **перед** удалением игрушки, когда игрок пытается её подобрать.
+
+| Параметр | Описание |
+|---|---|
+| `id` | Индекс игрока (1–32) |
+| `ent` | Индекс энтити игрушки (ещё валидный в момент вызова) |
+| `toy_idx` | Индекс типа игрушки (0-based, из `toy_models.ini`) |
+
+**Возвращаемые значения:**
+- `PLUGIN_CONTINUE` — разрешить подбор (по умолчанию)
+- `PLUGIN_HANDLED` — запретить подбор (игрушка останется, награды не выданы)
+
+**Применения:**
+- Реализовать собственную систему очков/денег/опыта (так делает `toy_rewards.amxx`)
+- Ограничить подбор по команде, VIP-флагу или условию
+- Логировать или транслировать свои события подбора
+- Выдать игровой бонус (HP, броня, оружие)
+
+**Пример — запретить подбор КТ:**
+```pawn
+public toy_on_pickup(id, ent, toy_idx)
+{
+    if(get_user_team(id) == 2) // CT
+    {
+        client_print(id, print_chat, "Только террористы собирают игрушки!")
+        return PLUGIN_HANDLED
+    }
+    return PLUGIN_CONTINUE
+}
+```
+
+**Пример — выдача HP при подборе:**
+```pawn
+public toy_on_pickup(id, ent, toy_idx)
+{
+    new rarity = toy_get_rarity(toy_idx)
+    new hp = (rarity == TOY_RARITY_LEGENDARY) ? 100 : 25
+    set_user_health(id, min(get_user_health(id) + hp, 150))
+    return PLUGIN_CONTINUE
+}
+```
+
+---
+
+#### `toy_on_spawned(ent, toy_idx, pos_idx)`
+
+Вызывается **после** создания энтити игрушки на карте (при первом спавне или переспавне).
+
+| Параметр | Описание |
+|---|---|
+| `ent` | Только что созданная энтити игрушки |
+| `toy_idx` | Индекс типа игрушки |
+| `pos_idx` | Индекс позиции (0-based, из `data/toy_spawn/<карта>.ini`) |
+
+**Возврат:** игнорируется (ET_IGNORE)
+
+**Применения:**
+- Прикрепить кастомные эффекты (свечение, свет, частицы) для определённых раритетов
+- Применить рендер-оверлеи, прозрачность, цвет
+- Расширить трекинг для статистики
+
+**Пример — золотое свечение легендарных игрушек:**
+```pawn
+public toy_on_spawned(ent, toy_idx, pos_idx)
+{
+    if(toy_get_rarity(toy_idx) != TOY_RARITY_LEGENDARY) return
+
+    set_rendering(ent, kRenderFxGlowShell, 255, 200, 0, kRenderNormal, 16)
+}
+```
+
+---
+
+#### `toy_on_map_spawn_complete(count)`
+
+Вызывается **один раз за карту**, сразу после того как все игрушки были заспавнены.
+
+| Параметр | Описание |
+|---|---|
+| `count` | Сколько игрушек реально заспавнилось (может быть меньше запрошенного, если не хватило позиций/типов) |
+
+**Возврат:** игнорируется
+
+**Применения:**
+- Инициализировать счётчик, HUD или таймеры анонсов (так делает `toy_announcer.amxx`)
+- Запустить отслеживание коллекции на карту
+- Сохранить снэпшот старта карты для статистики
+
+**Пример — приветственное сообщение:**
+```pawn
+public toy_on_map_spawn_complete(count)
+{
+    client_print_color(0, print_team_default, "^4[Toys]^1 Заспавнено %d игрушек. Ищите!", count)
+}
+```
+
+---
+
+### Нативы — Чтение данных о типе игрушки
+
+Эти функции читают базу игрушек, загруженную из `toy_models.ini`. Диапазон `idx` = 0…`toy_get_type_count()-1`.
+
+#### `toy_get_toy_idx(ent)`
+Возвращает индекс типа игрушки для энтити, или `-1` если `ent` — не игрушка.
+
+```pawn
+new toy_idx = toy_get_toy_idx(ent)
+if(toy_idx < 0) return  // не игрушка
+```
+
+#### `toy_get_name(idx, buf[], len)`
+Копирует в `buf` отображаемое имя игрушки (из заголовка секции в `toy_models.ini`, например `"Foxy Red"`).
+
+#### `toy_get_rarity(idx)`
+Возвращает одну из `TOY_RARITY_COMMON`, `TOY_RARITY_RARE`, `TOY_RARITY_EPIC`, `TOY_RARITY_LEGENDARY`.
+
+#### `toy_get_model(idx, buf[], len)`
+Копирует путь к модели (например `models/toys/FNAF_toys.mdl`) в `buf`.
+
+#### `toy_get_body(idx)` / `toy_get_skin(idx)`
+Возвращают номер bodygroup / skin этого типа игрушки. Полезно если вы спавните свою превью-модель.
+
+#### `toy_get_type_count()`
+Всего типов игрушек, загруженных из конфига (по всем раритетам).
+
+---
+
+### Нативы — Состояние спавна
+
+#### `toy_get_spawned_count()`
+Количество живых (не собранных) игрушек на карте сейчас. Уменьшается при каждом подборе, сбрасывается при переспавне.
+
+**Используется в** `toy_announcer.amxx` для анонса оставшихся игрушек.
+
+```pawn
+new remaining = toy_get_spawned_count()
+client_print(id, print_chat, "На карте ещё спрятано %d игрушек", remaining)
+```
+
+#### `toy_get_pos_count()`
+Количество сохранённых позиций для текущей карты (из `data/toy_spawn/<карта>.ini`).
+
+---
+
+### Нативы — Управление позициями
+
+Позиция — это точка спавна, расставленная админом. Каждая имеет origin, yaw и опциональную привязку к типу игрушки.
+
+#### `toy_get_pos_data(pos_idx, Float:origin[3], &Float:yaw, &bound_toy_idx)`
+Читает данные позиции по индексу.
+- `origin` заполняется XYZ
+- `yaw` заполняется углом поворота по оси Y
+- `bound_toy_idx` = `-1` если случайная, иначе индекс типа игрушки
+
+Возвращает `1` при успехе, `0` если `pos_idx` вне диапазона.
+
+#### `toy_add_position(const Float:origin[3], Float:yaw, bound_toy_idx = -1)`
+Создаёт новую позицию в памяти. Возвращает `pos_idx` или `-1` если лимит исчерпан (макс 512).  
+**Не сохраняет автоматически** — после пакета изменений вызовите `toy_save_positions()`.
+
+#### `toy_remove_position(pos_idx)`
+Удаляет позицию по индексу. Индексы последующих позиций сдвигаются на 1 вниз.
+
+#### `toy_update_position(pos_idx, const Float:origin[3], Float:yaw, bound_toy_idx)`
+Перезаписывает данные существующей позиции.
+
+#### `toy_save_positions()`
+Пишет текущие позиции из памяти в `data/toy_spawn/<текущая_карта>.ini`. Вызывать после изменений.
+
+#### `toy_reload_positions()`
+Перечитывает файл и заменяет позиции в памяти. Полезно после ручного редактирования файла.
+
+#### `toy_clear_positions()`
+Удаляет **все** позиции текущей карты из памяти (на диске не сохраняет).
+
+**Пример — программно добавить позицию под ногами игрока:**
+```pawn
+public cmd_addhere(id)
+{
+    new Float:origin[3], Float:angles[3]
+    pev(id, pev_origin, origin)
+    pev(id, pev_v_angle, angles)
+
+    new pos_idx = toy_add_position(origin, angles[1] + 180.0, -1)
+    if(pos_idx >= 0)
+    {
+        toy_save_positions()
+        client_print(id, print_chat, "Позиция #%d добавлена", pos_idx)
+    }
+    return PLUGIN_HANDLED
+}
+```
+
+---
+
+### Нативы — Управление спавном
+
+#### `toy_spawn_at_position(pos_idx)`
+Принудительно спавнит игрушку в указанной позиции. Возвращает индекс новой энтити или `0` при неудаче. Учитывает правила раритета (лимит легендарных, shuffle-bag).
+
+#### `toy_respawn_all()`
+Убирает все живые игрушки и запускает полный цикл спавна заново. Полезно после изменения `toy_count` или перезагрузки конфига.
+
+#### `toy_remove_entity(ent)`
+Удаляет конкретную игрушку с карты (без триггера подбора). Чистит внутренний трекинг.
+
+#### `toy_trigger_pickup(id, ent)`
+Имитирует подбор: вызывает `toy_on_pickup`, выдаёт награды, проигрывает звук, удаляет энтити. Применения:
+- Альтернативный способ взаимодействия (например, расстрелять игрушку вместо нажатия E)
+- Админ-команды "собрать за игрока"
+- Автосбор на зонах касания
+
+```pawn
+// Админ-команда: подобрать игрушку, на которую смотрит админ
+public cmd_forcegrab(id)
+{
+    new ent = find_aimed_toy(id, 500.0)  // ваша вспомогательная функция
+    if(ent) toy_trigger_pickup(id, ent)
+    return PLUGIN_HANDLED
+}
+```
+
+---
+
+### Нативы — Переопределение количества на карту
+
+#### `toy_get_map_file_count()`
+Возвращает значение, записанное в файле спавна карты:
+- `-1` — авто (используется cvar `toy_count`)
+- `0`  — выключено (игрушки не спавнятся на этой карте)
+- `N`  — ровно N игрушек
+
+#### `toy_set_map_file_count(count)`
+Устанавливает переопределение. Вызовите `toy_save_positions()` для сохранения. Используется в админ-меню при изменении пункта "Количество игрушек".
+
+---
 
 ### Вспомогательная функция
 
+#### `toy_rarity_to_str(id, rarity, buf[], len)`
+Заполняет `buf` локализованным названием раритета (через `%L` форматирование), учитывая язык игрока.
+
 ```pawn
-// Заполняет buf локализованным названием раритета для игрока id
-stock toy_rarity_to_str(id, rarity, buf[], len)
+new rar_str[32]
+toy_rarity_to_str(id, TOY_RARITY_EPIC, rar_str, charsmax(rar_str))
+// rar_str = "Epic" (en) или "Эпическая" (ru)
+```
+
+> **Важно:** буфер должен быть **минимум 32 ячейки** — кириллица в UTF-8 занимает 2 байта на символ, одно только "Легендарная" = 22 байта.
+
+---
+
+### Полный пример плагина кастомных наград
+
+```pawn
+#include <amxmodx>
+#include <cstrike>
+#include <toys_system>
+
+public plugin_init()
+    register_plugin("Toy Money Rewards", "1.0", "author")
+
+public toy_on_pickup(id, ent, toy_idx)
+{
+    new rarity = toy_get_rarity(toy_idx)
+    new money
+    switch(rarity)
+    {
+        case TOY_RARITY_COMMON:    money = 100
+        case TOY_RARITY_RARE:      money = 500
+        case TOY_RARITY_EPIC:      money = 1500
+        case TOY_RARITY_LEGENDARY: money = 5000
+    }
+
+    new current = cs_get_user_money(id)
+    cs_set_user_money(id, min(current + money, 16000))
+
+    new name[64], rar_str[32]
+    toy_get_name(toy_idx, name, charsmax(name))
+    toy_rarity_to_str(id, rarity, rar_str, charsmax(rar_str))
+
+    client_print(id, print_chat, "Ты нашёл %s [%s] и получил $%d", name, rar_str, money)
+    return PLUGIN_CONTINUE
+}
 ```
 
 ---
