@@ -38,7 +38,7 @@
 
 new bool:g_placing[33]
 new bool:g_is_relocate[33]
-new g_place_bound_toy[33]
+new g_place_bound_rarity[33]
 new Float:g_place_hit[33][3]
 new Float:g_place_yaw[33]
 new g_preview_ent[33]
@@ -220,12 +220,16 @@ create_vis_entities()
     new i
     for(i = 0; i < count && g_vis_count < MAX_POSITIONS; i++)
     {
-        new Float:origin[3], Float:yaw, bound_toy
-        toy_get_pos_data(i, origin, yaw, bound_toy)
+        new Float:origin[3], Float:yaw, bound_rarity
+        toy_get_pos_data(i, origin, yaw, bound_rarity)
 
         new toy_idx
-        if(bound_toy >= 0)
-            toy_idx = bound_toy
+        if(bound_rarity >= 0)
+        {
+            // Preview model — первая игрушка этого тира (fallback к cycle).
+            toy_idx = first_toy_of_rarity(bound_rarity)
+            if(toy_idx < 0) toy_idx = g_vis_cycle_idx % type_count
+        }
         else
             toy_idx = g_vis_cycle_idx % type_count
 
@@ -345,8 +349,12 @@ update_preview_model(id)
     if(type_count <= 0) return
 
     new toy_idx
-    if(g_place_bound_toy[id] >= 0)
-        toy_idx = g_place_bound_toy[id]
+    if(g_place_bound_rarity[id] >= 0)
+    {
+        // Binding тира → показываем первую игрушку этого тира как репрезентатив
+        toy_idx = first_toy_of_rarity(g_place_bound_rarity[id])
+        if(toy_idx < 0) toy_idx = g_preview_model_idx[id] % type_count
+    }
     else
         toy_idx = g_preview_model_idx[id] % type_count
 
@@ -396,7 +404,7 @@ exit_placement_mode(id, bool:save)
         }
         else
         {
-            new new_idx = toy_add_position(origin, g_place_yaw[id], g_place_bound_toy[id])
+            new new_idx = toy_add_position(origin, g_place_yaw[id], g_place_bound_rarity[id])
             toy_save_positions()
             refresh_vis_entities()
             client_print(id, print_chat, "%L", id, "TOY_ADM_POS_ADDED", new_idx + 1)
@@ -422,7 +430,7 @@ enter_placement_mode(id)
     }
 
     g_is_relocate[id]       = false
-    g_place_bound_toy[id]   = -1
+    g_place_bound_rarity[id]   = -1
     g_preview_model_idx[id] = 0
     g_place_last_rotate[id] = 0.0
 
@@ -455,21 +463,21 @@ enter_placement_mode_relocate(id, pos_idx)
     new type_count = toy_get_type_count()
     if(type_count <= 0) { set_task(0.1, "task_reopen_main", id); return; }
 
-    new Float:dummy[3], Float:cur_yaw, bound_toy
-    toy_get_pos_data(pos_idx, dummy, cur_yaw, bound_toy)
+    new Float:dummy[3], Float:cur_yaw, bound_rarity
+    toy_get_pos_data(pos_idx, dummy, cur_yaw, bound_rarity)
 
     g_edit_pos_idx[id]      = pos_idx
     g_is_relocate[id]       = true
     g_preview_model_idx[id] = 0
     g_place_last_rotate[id] = 0.0
     g_place_yaw[id]         = cur_yaw
-    g_place_bound_toy[id]   = bound_toy
+    g_place_bound_rarity[id]= bound_rarity
 
+    // Для preview берём первую игрушку тира (если тир задан) или модель[0].
     new model[MAX_MODEL_LEN]
-    if(bound_toy >= 0)
-        toy_get_model(bound_toy, model, charsmax(model))
-    else
-        toy_get_model(0, model, charsmax(model))
+    new preview_toy = (bound_rarity >= 0) ? first_toy_of_rarity(bound_rarity) : 0
+    if(preview_toy < 0) preview_toy = 0
+    toy_get_model(preview_toy, model, charsmax(model))
     if(!model[0]) { set_task(0.1, "task_reopen_main", id); return; }
 
     new Float:origin[3]
@@ -482,7 +490,7 @@ enter_placement_mode_relocate(id, pos_idx)
     g_placing[id]     = true
 
     set_task(0.05, "task_placement", id + TASK_PLACE, _, _, "b")
-    if(g_place_bound_toy[id] < 0)
+    if(g_place_bound_rarity[id] < 0)
         set_task(3.0, "task_preview_cycle", id + TASK_CYCLE, _, _, "b")
 
     show_placement_menu(id)
@@ -534,11 +542,11 @@ show_placement_menu(id)
     formatex(buf, charsmax(buf), "%L", id, "TOY_MENU_SAVE_POS")
     menu_additem(menu, buf, "2")
 
-    if(g_place_bound_toy[id] >= 0)
+    if(g_place_bound_rarity[id] >= 0)
     {
-        new tname[MAX_NAME_LEN]
-        toy_get_name(g_place_bound_toy[id], tname, charsmax(tname))
-        formatex(buf, charsmax(buf), "%L", id, "TOY_MENU_TOY_BOUND", tname)
+        new rar_str[32]
+        toy_rarity_to_str(id, g_place_bound_rarity[id], rar_str, charsmax(rar_str))
+        formatex(buf, charsmax(buf), "%L", id, "TOY_MENU_TOY_BOUND", rar_str)
     }
     else
         formatex(buf, charsmax(buf), "%L", id, "TOY_MENU_TOY_RANDOM")
@@ -555,29 +563,52 @@ show_toy_select_menu(id, mode)
 {
     g_toy_select_mode[id] = mode
 
-    new sel_title[64], sel_rand[32]
-    formatex(sel_title, charsmax(sel_title), "%L", id, "TOY_MENU_TOY_SEL_TITLE")
-    formatex(sel_rand, charsmax(sel_rand), "%L", id, "TOY_MENU_TOY_SEL_RANDOM")
-    new menu = menu_create(sel_title, "menu_toy_select")
-    menu_setprop(menu, MPROP_PERPAGE, 7)
+    new title[64]
+    formatex(title, charsmax(title), "%L", id, "TOY_MENU_RARITY_SEL_TITLE")
+    new menu = menu_create(title, "menu_toy_select")
 
-    menu_additem(menu, sel_rand, "-1")
+    // "Любой" — TOY_RARITY_ANY (-1)
+    new any_str[48]
+    formatex(any_str, charsmax(any_str), "%L", id, "TOY_MENU_RARITY_ANY")
+    menu_additem(menu, any_str, "-1")
 
-    new count = toy_get_type_count()
-    new i, tname[MAX_NAME_LEN], rar_str[32]
-    for(i = 0; i < count; i++)
+    // 4 тира по порядку
+    for(new r = TOY_RARITY_COMMON; r <= TOY_RARITY_LEGENDARY; r++)
     {
-        toy_get_name(i, tname, charsmax(tname))
-        toy_rarity_to_str(id, toy_get_rarity(i), rar_str, charsmax(rar_str))
-
-        new buf[96], item_data[8]
-        formatex(buf, charsmax(buf), "%s  \d[%s]", tname, rar_str)
-        num_to_str(i, item_data, charsmax(item_data))
-        menu_additem(menu, buf, item_data)
+        new rar_str[32], info[4], count_str[32]
+        toy_rarity_to_str(id, r, rar_str, charsmax(rar_str))
+        new cnt = count_toys_of_rarity_admin(r)
+        formatex(count_str, charsmax(count_str), " \d[%d шт.]", cnt)
+        new buf[96]
+        formatex(buf, charsmax(buf), "%s%s", rar_str, count_str)
+        num_to_str(r, info, charsmax(info))
+        menu_additem(menu, buf, info)
     }
 
     menu_setprop(menu, MPROP_EXIT, MEXIT_ALL)
     menu_display(id, menu, 0)
+}
+
+// Счётчик игрушек указанного тира (для UI "N шт.").
+count_toys_of_rarity_admin(rarity)
+{
+    new n = 0
+    new count = toy_get_type_count()
+    for(new i = 0; i < count; i++)
+        if(toy_get_rarity(i) == rarity)
+            n++
+    return n
+}
+
+// Первая зарегистрированная игрушка указанного тира (для preview-модели
+// при rarity-binding). -1 если нет.
+first_toy_of_rarity(rarity)
+{
+    new count = toy_get_type_count()
+    for(new i = 0; i < count; i++)
+        if(toy_get_rarity(i) == rarity)
+            return i
+    return -1
 }
 
 show_pos_list(id)
@@ -592,15 +623,15 @@ show_pos_list(id)
     new i
     for(i = 0; i < count; i++)
     {
-        new Float:origin[3], Float:yaw, bound_toy
-        toy_get_pos_data(i, origin, yaw, bound_toy)
+        new Float:origin[3], Float:yaw, bound_rarity
+        toy_get_pos_data(i, origin, yaw, bound_rarity)
 
         new buf[96], idata[8]
-        if(bound_toy >= 0)
+        if(bound_rarity >= 0)
         {
-            new tname[MAX_NAME_LEN]
-            toy_get_name(bound_toy, tname, charsmax(tname))
-            formatex(buf, charsmax(buf), "%L", id, "TOY_MENU_POS_ITEM_BOUND", i + 1, tname)
+            new rar_str[32]
+            toy_rarity_to_str(id, bound_rarity, rar_str, charsmax(rar_str))
+            formatex(buf, charsmax(buf), "%L", id, "TOY_MENU_POS_ITEM_BOUND", i + 1, rar_str)
         }
         else
             formatex(buf, charsmax(buf), "%L", id, "TOY_MENU_POS_ITEM_RANDOM", i + 1)
@@ -626,18 +657,18 @@ show_pos_list(id)
 
 show_edit_pos_menu(id, pos_idx)
 {
-    new Float:origin[3], Float:yaw, bound_toy
-    toy_get_pos_data(pos_idx, origin, yaw, bound_toy)
+    new Float:origin[3], Float:yaw, bound_rarity
+    toy_get_pos_data(pos_idx, origin, yaw, bound_rarity)
 
     new title[80], buf[96]
     formatex(title, charsmax(title), "%L", id, "TOY_MENU_EDIT_TITLE", pos_idx + 1)
     new menu = menu_create(title, "menu_edit_pos")
 
-    if(bound_toy >= 0)
+    if(bound_rarity >= 0)
     {
-        new tname[MAX_NAME_LEN]
-        toy_get_name(bound_toy, tname, charsmax(tname))
-        formatex(buf, charsmax(buf), "%L", id, "TOY_MENU_EDIT_TOY_CHANGE", tname)
+        new rar_str[32]
+        toy_rarity_to_str(id, bound_rarity, rar_str, charsmax(rar_str))
+        formatex(buf, charsmax(buf), "%L", id, "TOY_MENU_EDIT_TOY_CHANGE", rar_str)
     }
     else
         formatex(buf, charsmax(buf), "%L", id, "TOY_MENU_EDIT_TOY_BIND")
@@ -803,7 +834,7 @@ public menu_toy_select(id, menu, item)
 
     if(g_toy_select_mode[id] == 0)
     {
-        g_place_bound_toy[id] = toy_idx
+        g_place_bound_rarity[id] = toy_idx
 
         remove_task(id + TASK_CYCLE)
         if(toy_idx < 0)
@@ -818,9 +849,10 @@ public menu_toy_select(id, menu, item)
     }
     else
     {
+        // toy_idx — это теперь rarity (из меню выбора тира): -1..3
         new pos_idx = g_edit_pos_idx[id]
-        new Float:origin[3], Float:yaw, bound_toy
-        toy_get_pos_data(pos_idx, origin, yaw, bound_toy)
+        new Float:origin[3], Float:yaw, bound_rarity
+        toy_get_pos_data(pos_idx, origin, yaw, bound_rarity)
         toy_update_position(pos_idx, origin, yaw, toy_idx)
         toy_save_positions()
         refresh_vis_entities()
@@ -995,8 +1027,8 @@ public task_placement(taskid)
 
     new toy_str[MAX_NAME_LEN]
     new type_count = toy_get_type_count()
-    if(g_place_bound_toy[id] >= 0)
-        toy_get_name(g_place_bound_toy[id], toy_str, charsmax(toy_str))
+    if(g_place_bound_rarity[id] >= 0)
+        toy_get_name(g_place_bound_rarity[id], toy_str, charsmax(toy_str))
     else if(type_count > 0)
     {
         new idx = g_preview_model_idx[id] % type_count
@@ -1016,7 +1048,7 @@ public task_preview_cycle(taskid)
     new id = taskid - TASK_CYCLE
 
     if(!is_user_connected(id) || !g_placing[id]) return
-    if(g_place_bound_toy[id] >= 0) return
+    if(g_place_bound_rarity[id] >= 0) return
 
     g_preview_model_idx[id]++
     update_preview_model(id)
@@ -1038,10 +1070,11 @@ public task_vis_cycle()
         if(!pev_valid(ent)) continue
 
         new pos_idx = pev(ent, pev_iuser1)
-        new Float:origin[3], Float:yaw, bound_toy
-        toy_get_pos_data(pos_idx, origin, yaw, bound_toy)
+        new Float:origin[3], Float:yaw, bound_rarity
+        toy_get_pos_data(pos_idx, origin, yaw, bound_rarity)
 
-        if(bound_toy >= 0) continue
+        // Зафиксированный тир — не циклим модель, оставляем как есть
+        if(bound_rarity >= 0) continue
 
         new toy_idx = g_vis_cycle_idx % toy_get_type_count()
         new model[MAX_MODEL_LEN]
@@ -1109,18 +1142,18 @@ public task_vis_hud(taskid)
     if(!best_ent) return
 
     new pos_idx = pev(best_ent, pev_iuser1)
-    new Float:origin[3], Float:yaw, bound_toy
-    toy_get_pos_data(pos_idx, origin, yaw, bound_toy)
+    new Float:origin[3], Float:yaw, bound_rarity
+    toy_get_pos_data(pos_idx, origin, yaw, bound_rarity)
 
-    new toy_str[MAX_NAME_LEN]
-    if(bound_toy >= 0)
-        toy_get_name(bound_toy, toy_str, charsmax(toy_str))
+    new rar_str[32]
+    if(bound_rarity >= 0)
+        toy_rarity_to_str(id, bound_rarity, rar_str, charsmax(rar_str))
     else
-        copy(toy_str, charsmax(toy_str), "Случайная")
+        copy(rar_str, charsmax(rar_str), "Любой")
 
     new hud_vis[192]
     formatex(hud_vis, charsmax(hud_vis), "%L", id, "TOY_HUD_VIS_POS",
-        pos_idx + 1, origin[0], origin[1], origin[2], yaw, toy_str)
+        pos_idx + 1, origin[0], origin[1], origin[2], yaw, rar_str)
     set_hudmessage(255, 255, 100, -1.0, 0.72, 0, 0.0, 0.5, 0.0, 0.0, HUD_VIS_CH)
     show_hudmessage(id, "%s", hud_vis)
 }
@@ -1191,18 +1224,18 @@ public task_beam_hud(taskid)
 
     if(best_pos < 0) return
 
-    new Float:origin[3], Float:yaw, bound_toy
-    toy_get_pos_data(best_pos, origin, yaw, bound_toy)
+    new Float:origin[3], Float:yaw, bound_rarity
+    toy_get_pos_data(best_pos, origin, yaw, bound_rarity)
 
-    new toy_str[MAX_NAME_LEN]
-    if(bound_toy >= 0)
-        toy_get_name(bound_toy, toy_str, charsmax(toy_str))
+    new rar_str[32]
+    if(bound_rarity >= 0)
+        toy_rarity_to_str(id, bound_rarity, rar_str, charsmax(rar_str))
     else
-        copy(toy_str, charsmax(toy_str), "Случайная")
+        copy(rar_str, charsmax(rar_str), "Любой")
 
     new hud_beam[192]
     formatex(hud_beam, charsmax(hud_beam), "%L", id, "TOY_HUD_BEAM_POS",
-        best_pos + 1, origin[0], origin[1], origin[2], toy_str)
+        best_pos + 1, origin[0], origin[1], origin[2], rar_str)
     set_hudmessage(255, 220, 80, -1.0, 0.72, 0, 0.0, 0.6, 0.0, 0.0, HUD_BEAM_CH)
     show_hudmessage(id, "%s", hud_beam)
 }

@@ -28,7 +28,11 @@ new g_toy_count = 0
 
 new Float:g_pos_origin[MAX_POSITIONS][3]
 new Float:g_pos_yaw[MAX_POSITIONS]
-new g_pos_bound_toy[MAX_POSITIONS]
+// Привязка точки спавна к ТИРУ (не конкретной игрушке):
+//   -1 = любой тир (случайно по весам g_weight_*)
+//   0  = common, 1 = rare, 2 = epic, 3 = legendary
+// В ini пишется как строка: common / rare / epic / legendary / any (или пусто).
+new g_pos_bound_rarity[MAX_POSITIONS]
 new g_pos_count = 0
 
 new g_ent_list[MAX_POSITIONS]
@@ -341,15 +345,24 @@ load_positions()
 
         if(n > bound_col && parts[bound_col][0])
         {
-            new bound_idx
-            if(parts[bound_col][0] >= '0' && parts[bound_col][0] <= '9')
-                bound_idx = str_to_num(parts[bound_col])
+            // Поддерживаем 2 формы 5-й колонки:
+            //   string: common/rare/epic/legendary/any → rarity binding
+            //   число (legacy, индекс конкретной игрушки): из него берём её rarity
+            new val = rarity_from_str(parts[bound_col])
+            if(val >= 0)
+                g_pos_bound_rarity[idx] = val
+            else if(parts[bound_col][0] >= '0' && parts[bound_col][0] <= '9')
+            {
+                // Legacy fallback: был записан индекс игрушки → берём её тир
+                new toy_idx = str_to_num(parts[bound_col])
+                g_pos_bound_rarity[idx] = (toy_idx >= 0 && toy_idx < g_toy_count)
+                    ? g_toy_rarity[toy_idx] : -1
+            }
             else
-                bound_idx = find_toy_by_name(parts[bound_col])
-            g_pos_bound_toy[idx] = (bound_idx >= 0 && bound_idx < g_toy_count) ? bound_idx : -1
+                g_pos_bound_rarity[idx] = -1
         }
         else
-            g_pos_bound_toy[idx] = -1
+            g_pos_bound_rarity[idx] = -1
         g_pos_count++
     }
     fclose(f)
@@ -374,7 +387,8 @@ save_positions()
     }
 
     fputs(f, "// Adventures Toy System — позиции карты^n")
-    fputs(f, "// Формат: x y z yaw [bound_toy_name]^n")
+    fputs(f, "// Формат: x y z yaw [rarity]^n")
+    fputs(f, "//   rarity: common | rare | epic | legendary | any (или пусто)^n")
     fputs(f, "// count N — сколько игрушек спавнить на этой карте (переопределяет toy_count)^n^n")
 
     if(g_map_count_from_file >= 0) 
@@ -387,11 +401,13 @@ save_positions()
     new i, line[256]
     for(i = 0; i < g_pos_count; i++)
     {
-        if(g_pos_bound_toy[i] >= 0 && g_pos_bound_toy[i] < g_toy_count)
+        if(g_pos_bound_rarity[i] >= 0 && g_pos_bound_rarity[i] <= TOY_RARITY_LEGENDARY)
         {
-            formatex(line, charsmax(line), "%.4f %.4f %.4f %.4f %d^n",
+            new slug[16]
+            rarity_to_str(g_pos_bound_rarity[i], slug, charsmax(slug))
+            formatex(line, charsmax(line), "%.4f %.4f %.4f %.4f %s^n",
                 g_pos_origin[i][0], g_pos_origin[i][1], g_pos_origin[i][2],
-                g_pos_yaw[i], g_pos_bound_toy[i])
+                g_pos_yaw[i], slug)
         }
         else
         {
@@ -487,17 +503,24 @@ pick_random_unused(const bool:used[], avail)
 
 resolve_toy_for_position(pos_idx)
 {
-    new bound = g_pos_bound_toy[pos_idx]
+    new bound_rarity = g_pos_bound_rarity[pos_idx]
 
-    if(bound >= 0 && bound < g_toy_count)
+    // Точка зафиксирована на тире → выбираем случайную игрушку этого тира.
+    if(bound_rarity >= 0 && bound_rarity <= TOY_RARITY_LEGENDARY)
     {
-        if(g_toy_rarity[bound] == TOY_RARITY_LEGENDARY
+        // Legendary в превышенном лимите → откатываемся к weighted random.
+        if(bound_rarity == TOY_RARITY_LEGENDARY
         && g_legendary_spawned >= TOY_MAX_LEGENDARY_PER_MAP)
             return pick_toy_by_rarity()
 
-        return bound
+        new picked = pick_unused_of_rarity(bound_rarity)
+        // Если игрушек этого тира нет — fallback к weighted.
+        if(picked < 0 || picked >= g_toy_count)
+            return pick_toy_by_rarity()
+        return picked
     }
 
+    // any / не задано → случайно по весам всех тиров
     return pick_toy_by_rarity()
 }
 
@@ -654,6 +677,31 @@ find_toy_by_name(const name[])
     return -1
 }
 
+// Возвращает rarity-id по слугу: "common"/"rare"/"epic"/"legendary" → 0..3.
+// "any" или неизвестная строка → -1 (= случайный по весам).
+rarity_from_str(const s[])
+{
+    if(!s[0] || equali(s, "any")) return -1
+    if(equali(s, "common"))       return TOY_RARITY_COMMON
+    if(equali(s, "rare"))         return TOY_RARITY_RARE
+    if(equali(s, "epic"))         return TOY_RARITY_EPIC
+    if(equali(s, "legendary"))    return TOY_RARITY_LEGENDARY
+    return -2  // не слаг — пусть парсер пробует legacy-числовой путь
+}
+
+// Обратная операция: rarity-id → слуг (для save_positions).
+rarity_to_str(rarity, out[], maxlen)
+{
+    switch(rarity)
+    {
+        case TOY_RARITY_COMMON:    copy(out, maxlen, "common")
+        case TOY_RARITY_RARE:      copy(out, maxlen, "rare")
+        case TOY_RARITY_EPIC:      copy(out, maxlen, "epic")
+        case TOY_RARITY_LEGENDARY: copy(out, maxlen, "legendary")
+        default:                   copy(out, maxlen, "any")
+    }
+}
+
 parse_quoted(const line[], out[], maxlen)
 {
     new i = 0
@@ -762,7 +810,7 @@ public native_get_pos_data(plugin_id, num_params)
 
     set_array(2, _:origin, 3)
     set_param_byref(3, _:g_pos_yaw[idx])
-    set_param_byref(4, g_pos_bound_toy[idx])
+    set_param_byref(4, g_pos_bound_rarity[idx])
     return 1
 }
 
@@ -778,7 +826,7 @@ public native_add_position(plugin_id, num_params)
     g_pos_origin[idx][1] = origin[1]
     g_pos_origin[idx][2] = origin[2]
     g_pos_yaw[idx]       = get_param_f(2)
-    g_pos_bound_toy[idx] = get_param(3)
+    g_pos_bound_rarity[idx] = get_param(3)
     g_pos_count++
 
     return idx
@@ -796,7 +844,7 @@ public native_remove_position(plugin_id, num_params)
         g_pos_origin[i][1] = g_pos_origin[i+1][1]
         g_pos_origin[i][2] = g_pos_origin[i+1][2]
         g_pos_yaw[i]       = g_pos_yaw[i+1]
-        g_pos_bound_toy[i] = g_pos_bound_toy[i+1]
+        g_pos_bound_rarity[i] = g_pos_bound_rarity[i+1]
     }
     g_pos_count--
     return 1
@@ -813,7 +861,7 @@ public native_update_position(plugin_id, num_params)
     g_pos_origin[idx][1] = origin[1]
     g_pos_origin[idx][2] = origin[2]
     g_pos_yaw[idx]       = get_param_f(3)
-    g_pos_bound_toy[idx] = get_param(4)
+    g_pos_bound_rarity[idx] = get_param(4)
     return 1
 }
 

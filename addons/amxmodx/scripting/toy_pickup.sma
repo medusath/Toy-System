@@ -1,6 +1,8 @@
 #include <amxmodx>
+#include <amxmisc>
 #include <fakemeta>
 #include <engine>
+#include <reapi>
 #include <toys_system>
 
 
@@ -17,6 +19,13 @@ new g_looking_at[33]
 new Float:g_last_hud_time[33]
 new g_old_buttons[33]
 
+// Per-player limit: одна игрушка на карту. Память:
+//   g_picked_this_map[id] — быстрый флаг на слот (сбрасывается на reconnect),
+//   g_PickedSet (Trie<steamid>) — persist на всю карту, переживает reconnect.
+//   Обе очищаются при смене карты (plugin_init → TrieCreate → новый).
+new bool:g_picked_this_map[33]
+new Trie:g_PickedSet = Invalid_Trie
+
 new cvar_use_range              // toy_use_range — дистанция подбора
 
 public plugin_init()
@@ -29,6 +38,26 @@ public plugin_init()
 
     register_forward(FM_PlayerPreThink, "fw_player_prethink")
     register_forward(FM_CmdStart,       "fw_cmd_start")
+
+    g_PickedSet = TrieCreate()
+}
+
+public plugin_end()
+{
+    if(g_PickedSet != Invalid_Trie)
+        TrieDestroy(g_PickedSet)
+}
+
+public client_putinserver(id)
+{
+    g_picked_this_map[id] = false
+
+    // Persist по SteamID: если уже подобрал на этой карте и переподключился —
+    // флаг восстанавливается, второй подбор невозможен.
+    new steamid[32]
+    get_user_authid(id, steamid, charsmax(steamid))
+    if(steamid[0] && g_PickedSet != Invalid_Trie && TrieKeyExists(g_PickedSet, steamid))
+        g_picked_this_map[id] = true
 }
 
 public client_disconnected(id, bool:drop, message[], maxlen)
@@ -36,6 +65,7 @@ public client_disconnected(id, bool:drop, message[], maxlen)
     g_looking_at[id]    = 0
     g_last_hud_time[id] = 0.0
     g_old_buttons[id]   = 0
+    g_picked_this_map[id] = false
 }
 
 find_aimed_toy(id, Float:max_range)
@@ -142,7 +172,26 @@ public fw_cmd_start(id, uc_handle, seed)
         new ent = find_aimed_toy(id, range)
 
         if(ent && pev_valid(ent))
-            toy_trigger_pickup(id, ent)
+        {
+            // Per-player map limit: одна игрушка на карту.
+            if(g_picked_this_map[id])
+            {
+                client_print_color(id, print_team_default,
+                    "^4[Игрушки]^1 Вы уже подобрали игрушку на этой карте.")
+            }
+            else
+            {
+                new rc = toy_trigger_pickup(id, ent)
+                if(rc == 1)
+                {
+                    g_picked_this_map[id] = true
+                    new steamid[32]
+                    get_user_authid(id, steamid, charsmax(steamid))
+                    if(steamid[0] && g_PickedSet != Invalid_Trie)
+                        TrieSetCell(g_PickedSet, steamid, 1)
+                }
+            }
+        }
     }
 
     g_old_buttons[id] = buttons

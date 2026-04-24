@@ -11,6 +11,7 @@
 #define TOY_RARITY_RARE         1
 #define TOY_RARITY_EPIC         2
 #define TOY_RARITY_LEGENDARY    3
+#define TOY_RARITY_ANY         -1   // "любой тир" при привязке точки
 
 #define TOY_RARITY_WEIGHT_COMMON        100
 #define TOY_RARITY_WEIGHT_RARE           30
@@ -47,13 +48,14 @@ native toy_get_spawned_count();
 
 native toy_get_pos_count();
 
-native toy_get_pos_data(pos_idx, Float:origin[3], &Float:yaw, &bound_toy_idx);
+// pos_data возвращает rarity-биндинг точки спавна (TOY_RARITY_* или TOY_RARITY_ANY).
+native toy_get_pos_data(pos_idx, Float:origin[3], &Float:yaw, &bound_rarity);
 
-native toy_add_position(const Float:origin[3], Float:yaw, bound_toy_idx = -1);
+native toy_add_position(const Float:origin[3], Float:yaw, bound_rarity = TOY_RARITY_ANY);
 
 native toy_remove_position(pos_idx);
 
-native toy_update_position(pos_idx, const Float:origin[3], Float:yaw, bound_toy_idx);
+native toy_update_position(pos_idx, const Float:origin[3], Float:yaw, bound_rarity);
 
 native toy_save_positions();
 
