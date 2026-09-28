@@ -4,6 +4,7 @@
 #include <amxmisc>
 #include <fakemeta>
 #include <engine>
+#include <hamsandwich>
 #include <toys_system>
 
 #define PLUGIN_NAME     "[Adventures] Toy Core"
@@ -15,6 +16,7 @@
 #define MAX_MODEL_LEN   128
 #define MAX_NAME_LEN    64
 #define MAX_SOUND_LEN   64
+#define MAX_EDICTS      2048
 
 new g_toy_model[MAX_TOYS][MAX_MODEL_LEN]
 new g_toy_name[MAX_TOYS][MAX_NAME_LEN]
@@ -35,6 +37,11 @@ new Float:g_pos_yaw[MAX_POSITIONS]
 new g_pos_bound_rarity[MAX_POSITIONS]
 new g_pos_count = 0
 
+new bool:g_is_toy_ent[MAX_EDICTS]
+new bool:g_is_alive[MAX_PLAYERS + 1]
+
+new g_fullpack_fwd = -1
+
 new g_ent_list[MAX_POSITIONS]
 new g_ent_toy_idx[MAX_POSITIONS]
 new g_ent_pos_idx[MAX_POSITIONS]
@@ -51,6 +58,7 @@ new g_weight_legendary = TOY_RARITY_WEIGHT_LEGENDARY
 new cvar_enabled
 new cvar_count
 new cvar_logging
+new cvar_hide_dead
 
 new g_fwd_pickup
 new g_fwd_spawned
@@ -94,13 +102,18 @@ public plugin_init()
 {
     register_plugin(PLUGIN_NAME, PLUGIN_VERSION, PLUGIN_AUTHOR)
 
-    cvar_enabled  = register_cvar("toy_enabled",  "1")
-    cvar_count    = register_cvar("toy_count",    "5")
+    cvar_enabled   = register_cvar("toy_enabled",   "1")
+    cvar_count     = register_cvar("toy_count",     "5")
+    cvar_hide_dead = register_cvar("toy_hide_dead", "1")
+    hook_cvar_change(cvar_hide_dead, "on_hide_dead_change")
     if(!cvar_logging)
         cvar_logging = register_cvar("toy_logging", "0")
     register_cvar("toy_admin_flags", "g") //acces amx_cvar
 
     register_dictionary("toy_system.txt")
+
+    RegisterHam(Ham_Spawn,  "player", "ham_player_spawn_post",  1)
+    RegisterHam(Ham_Killed, "player", "ham_player_killed_post", 1)
 
     g_fwd_pickup       = CreateMultiForward("toy_on_pickup",            ET_STOP,   FP_CELL, FP_CELL, FP_CELL)
     g_fwd_spawned      = CreateMultiForward("toy_on_spawned",           ET_IGNORE, FP_CELL, FP_CELL, FP_CELL)
@@ -157,6 +170,51 @@ public task_map_start()
     }
 
     spawn_toys()
+}
+
+public client_putinserver(id)
+{
+    g_is_alive[id] = false
+}
+
+public ham_player_spawn_post(id)
+{
+    g_is_alive[id] = bool:is_user_alive(id)
+}
+
+public ham_player_killed_post(victim, attacker, shouldgib)
+{
+    g_is_alive[victim] = false
+}
+
+public on_hide_dead_change(pcvar, const old_value[], const new_value[])
+{
+    refresh_fullpack_hook()
+}
+
+refresh_fullpack_hook()
+{
+    new bool:want = (get_pcvar_num(cvar_hide_dead) != 0 && g_ent_count > 0)
+
+    if(want && g_fullpack_fwd == -1)
+        g_fullpack_fwd = register_forward(FM_AddToFullPack, "fw_add_to_full_pack", 0)
+    else if(!want && g_fullpack_fwd != -1)
+    {
+        unregister_forward(FM_AddToFullPack, g_fullpack_fwd, 0)
+        g_fullpack_fwd = -1
+    }
+}
+
+public fw_add_to_full_pack(es_handle, e, ent, host, hostflags, player, pSet)
+{
+    if(player || ent < 0 || ent >= MAX_EDICTS || !g_is_toy_ent[ent])
+        return FMRES_IGNORED
+
+    if(host < 1 || host > MAX_PLAYERS || g_is_alive[host])
+        return FMRES_IGNORED
+
+    forward_return(FMV_CELL, 0)
+    return FMRES_SUPERCEDE
 }
 
 load_toys_config()
@@ -428,9 +486,11 @@ remove_all_toys()
     {
         if(pev_valid(g_ent_list[i]))
             engfunc(EngFunc_RemoveEntity, g_ent_list[i])
+        mark_toy_ent(g_ent_list[i], false)
         g_ent_list[i] = 0
     }
     g_ent_count = 0
+    refresh_fullpack_hook()
     g_legendary_spawned = 0
     arrayset(g_spawn_used_toy, 0, sizeof(g_spawn_used_toy))
 }
@@ -439,12 +499,15 @@ spawn_toys()
 {
     remove_all_toys()
 
-    if(!g_pos_count || !g_toy_count) return
+    new ret
+    if(!g_pos_count || !g_toy_count || g_map_count_from_file == 0)
+    {
+        ExecuteForward(g_fwd_map_complete, ret, 0)
+        return
+    }
 
     new wanted
-    if(g_map_count_from_file == 0)
-        return
-    else if(g_map_count_from_file > 0)
+    if(g_map_count_from_file > 0)
         wanted = g_map_count_from_file
     else
         wanted = get_pcvar_num(cvar_count)
@@ -470,16 +533,11 @@ spawn_toys()
         new ent = do_spawn_entity(toy_idx, pos_idx)
         if(!ent) continue
 
-        if(g_toy_rarity[toy_idx] == TOY_RARITY_LEGENDARY)
-            g_legendary_spawned++
-
-        new ret
         ExecuteForward(g_fwd_spawned, ret, ent, toy_idx, pos_idx)
 
         spawned++
     }
 
-    new ret
     ExecuteForward(g_fwd_map_complete, ret, spawned)
 
     toy_log("[ToyCore] Spawned: %d (positions available: %d)", spawned, g_pos_count)
@@ -594,6 +652,8 @@ pick_unused_of_rarity(rarity)
 
 do_spawn_entity(toy_idx, pos_idx)
 {
+    if(g_ent_count >= MAX_POSITIONS) return 0
+
     new ent = engfunc(EngFunc_CreateNamedEntity, engfunc(EngFunc_AllocString, "info_target"))
     if(!pev_valid(ent)) return 0
 
@@ -629,19 +689,34 @@ do_spawn_entity(toy_idx, pos_idx)
     set_pev(ent, pev_framerate, g_toy_framerate[toy_idx])
     set_pev(ent, pev_animtime,  get_gametime())
 
-    if(g_ent_count < MAX_POSITIONS)
-    {
-        g_ent_list[g_ent_count]    = ent
-        g_ent_toy_idx[g_ent_count] = toy_idx
-        g_ent_pos_idx[g_ent_count] = pos_idx
-        g_ent_count++
-    }
+    mark_toy_ent(ent, true)
+
+    g_ent_list[g_ent_count]    = ent
+    g_ent_toy_idx[g_ent_count] = toy_idx
+    g_ent_pos_idx[g_ent_count] = pos_idx
+    g_ent_count++
+    refresh_fullpack_hook()
+
+    if(g_toy_rarity[toy_idx] == TOY_RARITY_LEGENDARY)
+        g_legendary_spawned++
 
     return ent
 }
 
+mark_toy_ent(ent, bool:is_toy)
+{
+    if(ent < 0 || ent >= MAX_EDICTS)
+    {
+        if(is_toy) toy_log("[ToyCore] Entity index %d out of MAX_EDICTS (%d), toy_hide_dead skips it", ent, MAX_EDICTS)
+        return
+    }
+    g_is_toy_ent[ent] = is_toy
+}
+
 remove_from_tracking(ent)
 {
+    mark_toy_ent(ent, false)
+
     new i
     for(i = 0; i < g_ent_count; i++)
     {
@@ -655,6 +730,7 @@ remove_from_tracking(ent)
             g_ent_pos_idx[j] = g_ent_pos_idx[j+1]
         }
         g_ent_count--
+        refresh_fullpack_hook()
         return
     }
 }

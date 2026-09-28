@@ -68,6 +68,7 @@ The system consists of 5 plugins that must all be loaded together:
 | `toy_enabled` | `1` | Enable/disable the entire system |
 | `toy_count` | `5` | Default number of toys spawned per map (used if no per-map override) |
 | `toy_logging` | `0` | Enable debug logging to `logs/toy_system.log` |
+| `toy_hide_dead` | `1` | Hide toys from dead players and spectators |
 | `toy_use_range` | `40` | Max distance (units) at which a player can pick up a toy |
 | `toy_admin_flags` | `g` | Admin flag required to access the toy admin menu |
 
@@ -233,7 +234,7 @@ weighted random across all tiers.
 - First announcement fires **~4.5 minutes** after map start
 - Subsequent announcements every **~4.5 minutes** (configurable in source: `ANN_INTERVAL`)
 - Announces only if at least 1 toy remains uncollected
-- Players can type `/toy` at any time to check the current count
+- Players can type `/toy` at any time to check the current count (if no toys were spawned on the map, it says so instead of "all collected")
 
 ---
 
@@ -375,7 +376,7 @@ Called **once per map**, right after all initial toys have been spawned.
 
 | Parameter | Description |
 |---|---|
-| `count` | Actual number of toys spawned (may be less than requested if positions/types ran out) |
+| `count` | Actual number of toys spawned (may be less than requested if positions/types ran out; `0` if the map has no positions, no toy types, or the per-map count is `0`) |
 
 **Return:** ignored
 
@@ -629,6 +630,7 @@ Adventures Toy System — модульная система плагинов д�
 | `toy_enabled` | `1` | Включить/выключить всю систему |
 | `toy_count` | `5` | Количество игрушек на карте по умолчанию (если нет переопределения) |
 | `toy_logging` | `0` | Включить запись отладочного лога в `logs/toy_system.log` |
+| `toy_hide_dead` | `1` | Скрывать игрушки от мёртвых игроков и наблюдателей |
 | `toy_use_range` | `40` | Максимальная дистанция (единицы) для подбора игрушки |
 | `toy_admin_flags` | `g` | Флаг доступа для открытия админ-меню |
 
@@ -784,7 +786,7 @@ count 3
 - Первый анонс — через **~4.5 минуты** после старта карты
 - Следующие анонсы — каждые **~4.5 минуты** (настраивается в исходнике: `ANN_INTERVAL`)
 - Анонс отправляется только если на карте ещё есть хотя бы 1 не собранная игрушка
-- Игрок может написать `/toy` в любой момент, чтобы узнать количество оставшихся
+- Игрок может написать `/toy` в любой момент, чтобы узнать количество оставшихся (если на карте игрушки не спавнились, об этом будет отдельное сообщение, а не «все собраны»)
 
 ---
 
@@ -926,7 +928,7 @@ public toy_on_spawned(ent, toy_idx, pos_idx)
 
 | Параметр | Описание |
 |---|---|
-| `count` | Сколько игрушек реально заспавнилось (может быть меньше запрошенного, если не хватило позиций/типов) |
+| `count` | Сколько игрушек реально заспавнилось (может быть меньше запрошенного, если не хватило позиций/типов; `0`, если на карте нет позиций, типов игрушек или лимит карты равен `0`) |
 
 **Возврат:** игнорируется
 

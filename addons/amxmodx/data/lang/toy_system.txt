@@ -59,6 +59,7 @@ TOY_RARITY_LEGENDARY = Legendary
 TOY_ANN_CHAT = ^4[^3DreamQuake^4]^1 Uncollected toys on the map: ^4%d^1/^4%d^1. Find them all!
 TOY_ANN_CMD = ^4[^3DreamQuake^4]^1 Toys remaining: ^4%d^1/^4%d
 TOY_ANN_NONE = ^4[^3DreamQuake^4]^1 All toys have already been collected!
+TOY_ANN_NO_TOYS = ^4[^3DreamQuake^4]^1 There are no toys on this map.
 [ru]
 TOY_HUD_PICKUP = Игрушка: %s  [%s]^nНажмите [E] чтобы подобрать
 TOY_ADM_NO_ACCESS = [DreamQuake] Нет доступа.
@@ -120,3 +121,4 @@ TOY_RARITY_LEGENDARY = Легендарная
 TOY_ANN_CHAT = ^4[^3DreamQuake^4]^1 На карте осталось игрушек: ^4%d^1/^4%d^1. Найди их!
 TOY_ANN_CMD = ^4[^3DreamQuake^4]^1 Осталось игрушек: ^4%d^1/^4%d
 TOY_ANN_NONE = ^4[^3DreamQuake^4]^1 Все игрушки уже собраны!
+TOY_ANN_NO_TOYS = ^4[^3DreamQuake^4]^1 На этой карте нет игрушек.
